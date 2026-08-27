@@ -2,14 +2,20 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-# ========== 1. Hàm tính toán đề xuất ==========
-def tinh_de_xuat(row):
-    """Tính số lượng đề xuất đặt theo công thức cơ bản"""
-    sltb = row['SLTB']
-    ct = row['CT']
-    ton = row['Ton']
-    de_xuat = max(0, (sltb * ct) - ton)
-    return de_xuat
+# ========== 1. Hàm tính toán đề xuất (hỗ trợ đề xuất có sẵn) ==========
+def tinh_de_xuat(row, use_existing=False):
+    """
+    Tính số lượng đề xuất.
+    Nếu use_existing=True và có cột DeXuat_co_san thì dùng giá trị đó,
+    ngược lại tính theo công thức: (SLTB * CT) - Ton
+    """
+    if use_existing and 'DeXuat_co_san' in row and pd.notna(row['DeXuat_co_san']):
+        return max(0, row['DeXuat_co_san'])
+    else:
+        sltb = row['SLTB']
+        ct = row['CT']
+        ton = row['Ton']
+        return max(0, (sltb * ct) - ton)
 
 # ========== 2. Hàm kiểm tra bất thường ==========
 def kiem_tra_bat_thuong(row, de_xuat):
@@ -33,19 +39,59 @@ def kiem_tra_bat_thuong(row, de_xuat):
     return len(ly_do) > 0, "; ".join(ly_do)
 
 # ========== 3. Giao diện Streamlit ==========
-st.set_page_config(page_title="AI Đặt Hàng Siêu Thị", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="AI Đặt Hàng Siêu Thị", layout="wide", initial_sidebar_state="expanded")
 st.title("🛒 Trợ lý AI Đặt Hàng Siêu Thị")
 st.markdown("Hệ thống tự động đề xuất số lượng đặt và cảnh báo khi có bất thường để bạn xác nhận.")
 
-uploaded_file = st.file_uploader("Tải lên file dữ liệu CSV", type=['csv'])
+# Nhập chu kỳ đặt hàng (CT) từ sidebar
+ct_default = 7
+ct_input = st.sidebar.number_input("Chu kỳ đặt hàng (ngày)", min_value=1, value=ct_default, step=1, help="Số ngày trung bình giữa các lần đặt hàng")
+
+uploaded_file = st.file_uploader("Tải lên file dữ liệu (CSV hoặc Excel)", type=['csv', 'xlsx'])
 
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-    st.subheader("Dữ liệu đầu vào")
-    st.dataframe(df)
+    # Đọc file phù hợp
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            # File Excel: bỏ qua dòng đầu tiên (dòng tiêu đề ngày)
+            df = pd.read_excel(uploaded_file, header=1)
+    except Exception as e:
+        st.error(f"Lỗi đọc file: {e}")
+        st.stop()
 
-    # Tạo cột đề xuất
-    df['DeXuat'] = df.apply(tinh_de_xuat, axis=1)
+    st.subheader("Dữ liệu đầu vào (10 dòng đầu)")
+    st.dataframe(df.head(10))
+
+    # ===== ÁNH XẠ CỘT =====
+    # Kiểm tra các cột cần thiết
+    required_cols = ['madathang', 'ten', 'Tồn B.Trường', 'SLTB B.Trường']
+    if not all(col in df.columns for col in required_cols):
+        st.error("File không đúng định dạng. Cần có các cột: 'madathang', 'ten', 'Tồn B.Trường', 'SLTB B.Trường'")
+        st.stop()
+
+    # Đổi tên cột cho khớp với code
+    df.rename(columns={
+        'madathang': 'SKU',
+        'ten': 'TenSanPham',
+        'Tồn B.Trường': 'Ton',
+        'SLTB B.Trường': 'SLTB'
+    }, inplace=True)
+
+    # Kiểm tra có cột đề xuất có sẵn không
+    co_de_xuat_co_san = 'SL PLT2 P.bổ cho B.trường' in df.columns
+    if co_de_xuat_co_san:
+        df.rename(columns={'SL PLT2 P.bổ cho B.trường': 'DeXuat_co_san'}, inplace=True)
+        st.info("✅ Phát hiện cột đề xuất có sẵn, sẽ sử dụng cột này làm số lượng đặt.")
+    else:
+        st.warning("Không tìm thấy cột đề xuất có sẵn, app sẽ tự tính theo công thức (SLTB * CT - Tồn).")
+
+    # Thêm cột CT (chu kỳ) vào dataframe
+    df['CT'] = ct_input
+
+    # Tính toán đề xuất
+    df['DeXuat'] = df.apply(lambda row: tinh_de_xuat(row, use_existing=co_de_xuat_co_san), axis=1)
 
     # Kiểm tra bất thường
     df['BatThuong'] = False
@@ -66,7 +112,7 @@ if uploaded_file is not None:
     if len(df_bat_thuong) > 0:
         for idx, row in df_bat_thuong.iterrows():
             with st.expander(f"{row['TenSanPham']} (SKU: {row['SKU']})"):
-                st.write(f"**Số bán gần nhất:** {row['SoBan']}")
+                st.write(f"**Số bán gần nhất:** {row.get('SoBan', 'N/A')}")
                 st.write(f"**Tồn kho:** {row['Ton']}")
                 st.write(f"**SLTB:** {row['SLTB']} / ngày")
                 st.write(f"**Chu kỳ (CT):** {row['CT']} ngày")
@@ -85,10 +131,12 @@ if uploaded_file is not None:
                     st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('DONG_Y', row['DeXuat'])
                     st.success(f"Đã đồng ý đặt {row['DeXuat']} cho {row['TenSanPham']}")
                 if bo_qua:
+                    if 'quyet_dinh' not in st.session_state:
+                        st.session_state['quyet_dinh'] = {}
                     st.session_state['quyet_dinh'][row['SKU']] = ('BO_QUA', 0)
                     st.info(f"Đã bỏ qua {row['TenSanPham']}")
                 if so_luong_moi != row['DeXuat'] and st.button("Cập nhật số lượng", key=f"update_{idx}"):
-                    st.session_state['quyet_dinh'][row['SKU']] = ('SUA', so_luong_moi)
+                    st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('SUA', so_luong_moi)
                     st.success(f"Đã cập nhật số lượng {so_luong_moi}")
     else:
         st.success("Không có sản phẩm bất thường. Tất cả đều hợp lệ!")
@@ -139,4 +187,4 @@ if uploaded_file is not None:
         else:
             st.warning("Không có sản phẩm nào để đặt.")
 else:
-    st.info("Hãy tải lên file CSV để bắt đầu.")
+    st.info("Hãy tải lên file CSV hoặc Excel để bắt đầu.")
