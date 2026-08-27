@@ -2,13 +2,8 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-# ========== 1. Hàm tính toán đề xuất (hỗ trợ đề xuất có sẵn) ==========
+# ========== 1. Hàm tính toán đề xuất ==========
 def tinh_de_xuat(row, use_existing=False):
-    """
-    Tính số lượng đề xuất.
-    Nếu use_existing=True và có cột DeXuat_co_san thì dùng giá trị đó,
-    ngược lại tính theo công thức: (SLTB * CT) - Ton
-    """
     if use_existing and 'DeXuat_co_san' in row and pd.notna(row['DeXuat_co_san']):
         return max(0, row['DeXuat_co_san'])
     else:
@@ -19,59 +14,52 @@ def tinh_de_xuat(row, use_existing=False):
 
 # ========== 2. Hàm kiểm tra bất thường ==========
 def kiem_tra_bat_thuong(row, de_xuat):
-    """Trả về (có_bất_thường, lý do)"""
     sltb = row['SLTB']
     ton = row['Ton']
     ct = row['CT']
     ly_do = []
-
-    # 1. Tồn kho quá nhiều so với nhu cầu bán
     if sltb > 0:
         so_ngay_ban_duoc = ton / sltb
         if so_ngay_ban_duoc > 10:
             ly_do.append(f"Tồn kho {ton} đủ bán trong {so_ngay_ban_duoc:.1f} ngày (quá nhiều)")
-
-    # 2. Lượng đề xuất quá cao so với nhu cầu thực trong chu kỳ
     nhu_cau_toi_da = sltb * ct * 1.5
     if de_xuat > nhu_cau_toi_da:
         ly_do.append(f"Đề xuất {de_xuat} > {nhu_cau_toi_da:.1f} (vượt 1.5 lần nhu cầu thực)")
-
     return len(ly_do) > 0, "; ".join(ly_do)
 
-# ========== 3. Giao diện Streamlit ==========
+# ========== 3. Giao diện ==========
 st.set_page_config(page_title="AI Đặt Hàng Siêu Thị", layout="wide", initial_sidebar_state="expanded")
 st.title("🛒 Trợ lý AI Đặt Hàng Siêu Thị")
 st.markdown("Hệ thống tự động đề xuất số lượng đặt và cảnh báo khi có bất thường để bạn xác nhận.")
 
-# Nhập chu kỳ đặt hàng (CT) từ sidebar
-ct_default = 7
-ct_input = st.sidebar.number_input("Chu kỳ đặt hàng (ngày)", min_value=1, value=ct_default, step=1, help="Số ngày trung bình giữa các lần đặt hàng")
+ct_input = st.sidebar.number_input("Chu kỳ đặt hàng (ngày)", min_value=1, value=7, step=1, help="Số ngày trung bình giữa các lần đặt hàng")
 
 uploaded_file = st.file_uploader("Tải lên file dữ liệu (CSV hoặc Excel)", type=['csv', 'xlsx'])
 
 if uploaded_file is not None:
-    # Đọc file phù hợp
     try:
+        # Đọc file
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
-            # File Excel: bỏ qua dòng đầu tiên (dòng tiêu đề ngày)
-            df = pd.read_excel(uploaded_file, header=1)
+            # Bỏ qua dòng đầu tiên (dòng tiêu đề ngày)
+            df = pd.read_excel(uploaded_file, skiprows=1)  # dòng thứ 2 sẽ là header
+        st.success(f"Đã đọc file thành công! Số dòng: {len(df)}")
+        st.subheader("Dữ liệu đầu vào (10 dòng đầu)")
+        st.dataframe(df.head(10))
     except Exception as e:
         st.error(f"Lỗi đọc file: {e}")
         st.stop()
 
-    st.subheader("Dữ liệu đầu vào (10 dòng đầu)")
-    st.dataframe(df.head(10))
-
     # ===== ÁNH XẠ CỘT =====
-    # Kiểm tra các cột cần thiết
+    # Kiểm tra các cột bắt buộc
     required_cols = ['madathang', 'ten', 'Tồn B.Trường', 'SLTB B.Trường']
     if not all(col in df.columns for col in required_cols):
-        st.error("File không đúng định dạng. Cần có các cột: 'madathang', 'ten', 'Tồn B.Trường', 'SLTB B.Trường'")
+        st.error(f"File không đúng định dạng. Cần có các cột: {', '.join(required_cols)}")
+        st.info("Danh sách cột hiện tại: " + ", ".join(df.columns))
         st.stop()
 
-    # Đổi tên cột cho khớp với code
+    # Đổi tên
     df.rename(columns={
         'madathang': 'SKU',
         'ten': 'TenSanPham',
@@ -79,18 +67,24 @@ if uploaded_file is not None:
         'SLTB B.Trường': 'SLTB'
     }, inplace=True)
 
-    # Kiểm tra có cột đề xuất có sẵn không
+    # Kiểm tra cột đề xuất có sẵn
     co_de_xuat_co_san = 'SL PLT2 P.bổ cho B.trường' in df.columns
     if co_de_xuat_co_san:
         df.rename(columns={'SL PLT2 P.bổ cho B.trường': 'DeXuat_co_san'}, inplace=True)
-        st.info("✅ Phát hiện cột đề xuất có sẵn, sẽ sử dụng cột này làm số lượng đặt.")
+        st.info("✅ Sử dụng cột 'SL PLT2 P.bổ cho B.trường' làm đề xuất.")
     else:
-        st.warning("Không tìm thấy cột đề xuất có sẵn, app sẽ tự tính theo công thức (SLTB * CT - Tồn).")
+        st.warning("Không tìm thấy cột đề xuất, sẽ tự động tính theo công thức (SLTB * CT - Tồn).")
 
-    # Thêm cột CT (chu kỳ) vào dataframe
+    # Lọc bỏ dòng có SLTB = 0 hoặc NaN (không có nhu cầu)
+    df = df[df['SLTB'].notna() & (df['SLTB'] > 0)]
+    if len(df) == 0:
+        st.warning("Không có dữ liệu hợp lệ (SLTB > 0). Hãy kiểm tra file.")
+        st.stop()
+
+    # Gán CT
     df['CT'] = ct_input
 
-    # Tính toán đề xuất
+    # Tính đề xuất
     df['DeXuat'] = df.apply(lambda row: tinh_de_xuat(row, use_existing=co_de_xuat_co_san), axis=1)
 
     # Kiểm tra bất thường
@@ -101,84 +95,58 @@ if uploaded_file is not None:
         df.at[idx, 'BatThuong'] = bat_thuong
         df.at[idx, 'LyDo'] = ly_do
 
-    # Tách hai nhóm
+    # Tách nhóm
     df_hop_le = df[~df['BatThuong']]
     df_bat_thuong = df[df['BatThuong']]
 
-    # Hiển thị danh sách cần xác nhận
     st.markdown("---")
     st.subheader("⚠️ Danh sách cần xác nhận (bất thường)")
 
     if len(df_bat_thuong) > 0:
         for idx, row in df_bat_thuong.iterrows():
             with st.expander(f"{row['TenSanPham']} (SKU: {row['SKU']})"):
-                st.write(f"**Số bán gần nhất:** {row.get('SoBan', 'N/A')}")
                 st.write(f"**Tồn kho:** {row['Ton']}")
                 st.write(f"**SLTB:** {row['SLTB']} / ngày")
                 st.write(f"**Chu kỳ (CT):** {row['CT']} ngày")
                 st.write(f"**Đề xuất ban đầu:** {row['DeXuat']}")
-                st.warning(f"**Lý do cảnh báo:** {row['LyDo']}")
+                st.warning(f"**Lý do:** {row['LyDo']}")
 
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    dong_y = st.button("✅ Đồng ý đặt", key=f"ok_{idx}")
+                    if st.button("✅ Đồng ý đặt", key=f"ok_{idx}"):
+                        st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('DONG_Y', row['DeXuat'])
+                        st.success(f"Đã đồng ý đặt {row['DeXuat']} cho {row['TenSanPham']}")
                 with col2:
-                    bo_qua = st.button("❌ Bỏ qua", key=f"skip_{idx}")
+                    if st.button("❌ Bỏ qua", key=f"skip_{idx}"):
+                        st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('BO_QUA', 0)
+                        st.info(f"Đã bỏ qua {row['TenSanPham']}")
                 with col3:
                     so_luong_moi = st.number_input("Sửa số lượng", min_value=0, value=int(row['DeXuat']), key=f"edit_{idx}")
-
-                if dong_y:
-                    st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('DONG_Y', row['DeXuat'])
-                    st.success(f"Đã đồng ý đặt {row['DeXuat']} cho {row['TenSanPham']}")
-                if bo_qua:
-                    if 'quyet_dinh' not in st.session_state:
-                        st.session_state['quyet_dinh'] = {}
-                    st.session_state['quyet_dinh'][row['SKU']] = ('BO_QUA', 0)
-                    st.info(f"Đã bỏ qua {row['TenSanPham']}")
-                if so_luong_moi != row['DeXuat'] and st.button("Cập nhật số lượng", key=f"update_{idx}"):
-                    st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('SUA', so_luong_moi)
-                    st.success(f"Đã cập nhật số lượng {so_luong_moi}")
+                    if so_luong_moi != row['DeXuat'] and st.button("Cập nhật", key=f"update_{idx}"):
+                        st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('SUA', so_luong_moi)
+                        st.success(f"Đã cập nhật số lượng {so_luong_moi}")
     else:
-        st.success("Không có sản phẩm bất thường. Tất cả đều hợp lệ!")
+        st.success("🎉 Không có sản phẩm bất thường! Tất cả đều hợp lệ.")
 
-    # Hiển thị danh sách hợp lệ tự động đặt
     st.markdown("---")
     st.subheader("✅ Danh sách tự động đặt (hợp lệ)")
-
     if len(df_hop_le) > 0:
-        df_hop_le_display = df_hop_le[['SKU', 'TenSanPham', 'Ton', 'SLTB', 'CT', 'DeXuat']]
-        st.dataframe(df_hop_le_display)
+        st.dataframe(df_hop_le[['SKU', 'TenSanPham', 'Ton', 'SLTB', 'CT', 'DeXuat']])
     else:
-        st.write("Không có sản phẩm nào được tự động đặt.")
+        st.write("Không có sản phẩm tự động đặt.")
 
-    # Nút xuất đơn hàng cuối cùng
+    # Nút tạo đơn hàng
     if st.button("📦 Tạo đơn hàng cuối cùng"):
         quyet_dinh = st.session_state.get('quyet_dinh', {})
-
         final_rows = []
-        # Thêm các sản phẩm hợp lệ (tự động đặt)
         for _, row in df_hop_le.iterrows():
             if row['DeXuat'] > 0:
-                final_rows.append({
-                    'SKU': row['SKU'],
-                    'TenSanPham': row['TenSanPham'],
-                    'SoLuongDat': row['DeXuat'],
-                    'TrangThai': 'Tu dong'
-                })
-
-        # Thêm các sản phẩm bất thường đã được quyết định
+                final_rows.append({'SKU': row['SKU'], 'TenSanPham': row['TenSanPham'], 'SoLuongDat': row['DeXuat'], 'TrangThai': 'Tu dong'})
         for sku, (action, qty) in quyet_dinh.items():
-            if action == 'DONG_Y' or action == 'SUA':
-                if qty > 0:
-                    ten = df[df['SKU'] == sku]['TenSanPham'].values[0]
-                    final_rows.append({
-                        'SKU': sku,
-                        'TenSanPham': ten,
-                        'SoLuongDat': qty,
-                        'TrangThai': 'Da xac nhan'
-                    })
-
-        if len(final_rows) > 0:
+            if action in ['DONG_Y', 'SUA'] and qty > 0:
+                ten = df[df['SKU'] == sku]['TenSanPham'].values[0]
+                final_rows.append({'SKU': sku, 'TenSanPham': ten, 'SoLuongDat': qty, 'TrangThai': 'Da xac nhan'})
+        if final_rows:
             df_final = pd.DataFrame(final_rows)
             st.subheader("📋 Đơn hàng cuối cùng")
             st.dataframe(df_final)
@@ -187,4 +155,4 @@ if uploaded_file is not None:
         else:
             st.warning("Không có sản phẩm nào để đặt.")
 else:
-    st.info("Hãy tải lên file CSV hoặc Excel để bắt đầu.")
+    st.info("📂 Hãy tải lên file CSV hoặc Excel để bắt đầu.")
