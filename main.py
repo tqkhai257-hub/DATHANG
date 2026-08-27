@@ -1,18 +1,14 @@
 import pandas as pd
 import streamlit as st
+from io import BytesIO
 
-# ========== HÀM TÍNH ĐỀ XUẤT (có ràng buộc tồn PLT) ==========
+# ========== HÀM TÍNH ĐỀ XUẤT ==========
 def tinh_de_xuat(sltb, ct, ton, ton_plt, de_xuat_co_san=None):
-    # Tính nhu cầu dựa trên SLTB và chu kỳ
-    nhu_cau = max(0, (sltb * ct) - ton)
-    
-    # Nếu có đề xuất có sẵn (cột E) thì ưu tiên dùng, nhưng vẫn kiểm tra giới hạn
     if de_xuat_co_san is not None and pd.notna(de_xuat_co_san) and de_xuat_co_san > 0:
         de_xuat = max(0, de_xuat_co_san)
     else:
-        de_xuat = nhu_cau
-    
-    # Ràng buộc: không vượt quá tồn PLT
+        de_xuat = max(0, (sltb * ct) - ton)
+    # Không vượt quá tồn PLT
     if de_xuat > ton_plt:
         de_xuat = ton_plt
     return de_xuat
@@ -20,15 +16,12 @@ def tinh_de_xuat(sltb, ct, ton, ton_plt, de_xuat_co_san=None):
 # ========== HÀM KIỂM TRA BẤT THƯỜNG ==========
 def kiem_tra_bat_thuong(sltb, ton, ct, de_xuat, ton_plt):
     ly_do = []
-    # 1. Tồn tại cửa hàng quá nhiều
     if sltb > 0:
         so_ngay_ban_duoc = ton / sltb
         if so_ngay_ban_duoc > 10:
             ly_do.append(f"Tồn {ton} đủ bán {so_ngay_ban_duoc:.1f} ngày")
-    # 2. Đề xuất vượt quá tồn PLT
     if de_xuat > ton_plt:
         ly_do.append(f"Đề xuất {de_xuat} vượt tồn PLT {ton_plt}")
-    # 3. Đề xuất quá cao so với nhu cầu thực tế
     nhu_cau_toi_da = sltb * ct * 1.5
     if de_xuat > nhu_cau_toi_da:
         ly_do.append(f"Đề xuất {de_xuat} > {nhu_cau_toi_da:.1f} (vượt 1.5 lần nhu cầu)")
@@ -36,22 +29,18 @@ def kiem_tra_bat_thuong(sltb, ton, ct, de_xuat, ton_plt):
 
 # ========== LỌC PHI LOGIC ==========
 def loc_phi_logic(sltb, ton, de_xuat, ton_plt):
-    # Rule 1: Tồn cửa hàng cao, đề xuất thấp
     if ton > 0 and sltb > 0:
         so_ngay_ban_duoc = ton / sltb
         if so_ngay_ban_duoc > 10 and de_xuat < 5:
             return True, f"Tồn {ton} đủ bán {so_ngay_ban_duoc:.1f} ngày, đề xuất {de_xuat} quá thấp", 0
-    # Rule 2: Đề xuất cao nhưng bán chậm, tồn cửa hàng nhiều
     if de_xuat > 50 and sltb < 2 and ton > 50:
         return True, f"Đề xuất {de_xuat} cao, SLTB {sltb} thấp, tồn {ton} còn nhiều", 0
-    # Rule 3: Bán thấp nhưng tồn cửa hàng = 0 -> đặt tối thiểu
     if sltb < 5 and ton == 0:
         if de_xuat == 0:
             de_xuat_moi = max(1, int(sltb * 2))
             return False, f"Bán thấp ({sltb}/ngày), tồn=0 -> đặt tối thiểu {de_xuat_moi}", de_xuat_moi
         else:
             return False, "", de_xuat
-    # Rule 4: Tồn PLT không đủ để đáp ứng đề xuất (cảnh báo nhưng không loại bỏ)
     if de_xuat > ton_plt:
         return False, f"Tồn PLT chỉ có {ton_plt}, đề xuất {de_xuat} bị giới hạn", ton_plt
     return False, "", de_xuat
@@ -73,19 +62,11 @@ if uploaded_file is not None:
             df = pd.read_excel(uploaded_file, skiprows=2, header=None)
         st.success(f"Đọc thành công! {len(df)} dòng")
         
-        # Gán tên cột theo đúng vị trí
+        # Gán tên cột theo vị trí cố định
         df.columns = [
-            'SKU',          # cột 0
-            'TenSanPham',   # cột 1
-            'dvt',          # cột 2
-            'Ton_PLT',      # cột 3
-            'DeXuat_co_san',# cột 4
-            'BQ_ban_3D',    # cột 5
-            'Ton',          # cột 6
-            'SLTB'          # cột 7
+            'SKU', 'TenSanPham', 'dvt', 'Ton_PLT', 
+            'DeXuat_co_san', 'BQ_ban_3D', 'Ton', 'SLTB'
         ]
-        
-        # Giữ lại các cột cần dùng
         df = df[['SKU', 'TenSanPham', 'Ton_PLT', 'DeXuat_co_san', 'BQ_ban_3D', 'Ton', 'SLTB']]
         
         st.subheader("Dữ liệu đầu vào (10 dòng đầu)")
@@ -103,45 +84,33 @@ if uploaded_file is not None:
 
     df['CT'] = ct_input
 
-    # Tính đề xuất, ưu tiên cột có sẵn nhưng không vượt tồn PLT
+    # Tính đề xuất
     df['DeXuat'] = df.apply(lambda row: tinh_de_xuat(
-        row['SLTB'], 
-        row['CT'], 
-        row['Ton'], 
-        row['Ton_PLT'], 
-        row['DeXuat_co_san']
+        row['SLTB'], row['CT'], row['Ton'], row['Ton_PLT'], row['DeXuat_co_san']
     ), axis=1)
 
-    # Áp dụng lọc phi logic (có thể loại bỏ hoặc điều chỉnh)
+    # Lọc phi logic
     df['LoaiBo'] = False
     df['LyDoLoaiBo'] = ""
     df['DeXuatSauLoc'] = 0
     for idx, row in df.iterrows():
         loai_bo, ly_do, de_xuat_moi = loc_phi_logic(
-            row['SLTB'], 
-            row['Ton'], 
-            row['DeXuat'], 
-            row['Ton_PLT']
+            row['SLTB'], row['Ton'], row['DeXuat'], row['Ton_PLT']
         )
         df.at[idx, 'LoaiBo'] = loai_bo
         df.at[idx, 'LyDoLoaiBo'] = ly_do
         df.at[idx, 'DeXuatSauLoc'] = de_xuat_moi if not loai_bo else 0
 
-    # Tách nhóm
     df_bi_loai = df[df['LoaiBo']]
     df_khong_loai = df[~df['LoaiBo']]
 
-    # Kiểm tra bất thường cho những sản phẩm không bị loại
+    # Kiểm tra bất thường
     df_khong_loai['BatThuong'] = False
     df_khong_loai['LyDo'] = ""
     for idx, row in df_khong_loai.iterrows():
         de_xuat = row['DeXuatSauLoc']
         bat_thuong, ly_do = kiem_tra_bat_thuong(
-            row['SLTB'], 
-            row['Ton'], 
-            row['CT'], 
-            de_xuat, 
-            row['Ton_PLT']
+            row['SLTB'], row['Ton'], row['CT'], de_xuat, row['Ton_PLT']
         )
         df_khong_loai.at[idx, 'BatThuong'] = bat_thuong
         df_khong_loai.at[idx, 'LyDo'] = ly_do
@@ -149,7 +118,7 @@ if uploaded_file is not None:
     df_hop_le = df_khong_loai[~df_khong_loai['BatThuong']]
     df_bat_thuong = df_khong_loai[df_khong_loai['BatThuong']]
 
-    # Hiển thị các nhóm
+    # Hiển thị
     st.markdown("---")
     st.subheader("🚫 Danh sách bị loại (phi logic - không đặt)")
     if len(df_bi_loai) > 0:
@@ -179,7 +148,8 @@ if uploaded_file is not None:
                         st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('BO_QUA', 0)
                         st.info("Đã bỏ qua")
                 with col3:
-                    so_luong_moi = st.number_input("Sửa số lượng", min_value=0, max_value=int(row['Ton_PLT']), value=int(row['DeXuatSauLoc']), key=f"edit_{idx}")
+                    max_qty = int(row['Ton_PLT'])
+                    so_luong_moi = st.number_input("Sửa số lượng", min_value=0, max_value=max_qty, value=int(row['DeXuatSauLoc']), key=f"edit_{idx}")
                     if so_luong_moi != row['DeXuatSauLoc'] and st.button("Cập nhật", key=f"update_{idx}"):
                         st.session_state.setdefault('quyet_dinh', {})[row['SKU']] = ('SUA', so_luong_moi)
                         st.success(f"Cập nhật {so_luong_moi}")
@@ -193,7 +163,7 @@ if uploaded_file is not None:
     else:
         st.write("Không có sản phẩm tự động đặt.")
 
-    # Tạo đơn hàng
+    # ====== TẠO ĐƠN HÀNG ======
     if st.button("📦 Tạo đơn hàng cuối cùng"):
         quyet_dinh = st.session_state.get('quyet_dinh', {})
         final_rows = []
@@ -218,8 +188,25 @@ if uploaded_file is not None:
             df_final = pd.DataFrame(final_rows)
             st.subheader("📋 Đơn hàng cuối cùng")
             st.dataframe(df_final)
+
+            # Xuất CSV
             csv = df_final.to_csv(index=False).encode('utf-8')
-            st.download_button("⬇️ Tải đơn hàng CSV", csv, "don_hang.csv", "text/csv")
+            # Xuất Excel
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_final.to_excel(writer, index=False, sheet_name='Đơn hàng')
+            excel_data = output.getvalue()
+
+            col_csv, col_excel = st.columns(2)
+            with col_csv:
+                st.download_button("⬇️ Tải CSV", csv, "don_hang.csv", "text/csv")
+            with col_excel:
+                st.download_button(
+                    "⬇️ Tải Excel", 
+                    excel_data, 
+                    "don_hang.xlsx", 
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
         else:
             st.warning("Không có sản phẩm để đặt.")
 else:
