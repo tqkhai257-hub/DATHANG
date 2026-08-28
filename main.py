@@ -15,45 +15,56 @@ def tinh_de_xuat(sltb, ct, ton, ton_plt, de_xuat_co_san=None):
 # ========== HÀM KIỂM TRA BẤT THƯỜNG ==========
 def kiem_tra_bat_thuong(sltb, ton, ct, de_xuat, ton_plt):
     ly_do = []
-    if sltb > 0:
+    if sltb > 0 and ton > 0:
         so_ngay_ban_duoc = ton / sltb
         if so_ngay_ban_duoc > 10:
             ly_do.append(f"Tồn {ton} đủ bán {so_ngay_ban_duoc:.1f} ngày")
     if de_xuat > ton_plt:
         ly_do.append(f"Đề xuất {de_xuat} vượt tồn PLT {ton_plt}")
     nhu_cau_toi_da = sltb * ct * 1.5
-    if de_xuat > nhu_cau_toi_da:
+    if de_xuat > nhu_cau_toi_da and sltb > 0:
         ly_do.append(f"Đề xuất {de_xuat} > {nhu_cau_toi_da:.1f} (vượt 1.5 lần nhu cầu)")
     return len(ly_do) > 0, "; ".join(ly_do)
 
-# ========== LỌC PHI LOGIC (CÓ NGƯỠNG TỐI THIỂU) ==========
+# ========== LỌC PHI LOGIC VỚI PHÂN LOẠI ABC ==========
 def loc_phi_logic(sltb, ton, de_xuat, ton_plt, nguong_toi_thieu=5):
-    # 1. Nếu đề xuất quá nhỏ (dưới ngưỡng) và không phải trường hợp đặc biệt thì loại bỏ
+    # Phân loại sản phẩm theo SLTB
+    if sltb >= 10:
+        nhom = 'A'
+        so_ngay_du_tru = 7
+    elif sltb >= 5:
+        nhom = 'B'
+        so_ngay_du_tru = 5
+    else:
+        nhom = 'C'
+        so_ngay_du_tru = 3
+
+    # 1. Nếu là nhóm C và tồn kho > 0 → không đặt (không cần)
+    if nhom == 'C' and ton > 0:
+        return True, f"Nhóm C (SLTB={sltb}), tồn {ton} còn, không đặt", 0
+
+    # 2. Nếu là nhóm C và tồn = 0 → đặt tối thiểu (ngưỡng hoặc SLTB*2)
+    if nhom == 'C' and ton == 0:
+        de_xuat_moi = max(nguong_toi_thieu, int(sltb * 2))
+        return False, f"Nhóm C, tồn=0, đặt tối thiểu {de_xuat_moi}", de_xuat_moi
+
+    # 3. Nhóm A, B: tính nhu cầu dự trữ tối thiểu
+    ton_mong_muon = sltb * so_ngay_du_tru
+    if ton >= ton_mong_muon:
+        # Nếu tồn đã đủ dùng trong chu kỳ, không cần đặt
+        return True, f"Tồn {ton} >= mục tiêu {ton_mong_muon:.0f}, không đặt", 0
+
+    # 4. Nếu đề xuất nhỏ hơn ngưỡng nhưng tồn sắp hết thì vẫn đặt tối thiểu
     if de_xuat < nguong_toi_thieu:
-        # Trường hợp đặc biệt: tồn = 0 và SLTB > 0 (cần duy trì hàng)
-        if ton == 0 and sltb > 0:
-            # Nếu đã có đề xuất > 0 thì giữ, nhưng nếu = 0 thì đặt tối thiểu
-            if de_xuat == 0:
-                de_xuat_moi = max(1, int(sltb * 2))
-                return False, f"Tồn=0, SLTB={sltb}, đặt tối thiểu {de_xuat_moi}", de_xuat_moi
-            else:
-                return False, "", de_xuat
+        if ton <= sltb * 2:  # sắp hết
+            de_xuat_moi = max(nguong_toi_thieu, de_xuat)
+            return False, f"Tồn {ton} sắp hết, đặt tối thiểu {de_xuat_moi}", de_xuat_moi
         else:
             return True, f"Đề xuất {de_xuat} quá nhỏ (<{nguong_toi_thieu}), không đặt", 0
 
-    # 2. Tồn cửa hàng cao, đề xuất thấp (vẫn giữ)
-    if ton > 0 and sltb > 0:
-        so_ngay_ban_duoc = ton / sltb
-        if so_ngay_ban_duoc > 10 and de_xuat < 5:
-            return True, f"Tồn {ton} đủ bán {so_ngay_ban_duoc:.1f} ngày, đề xuất {de_xuat} quá thấp", 0
-
-    # 3. Đề xuất cao nhưng bán chậm, tồn cửa hàng nhiều
-    if de_xuat > 50 and sltb < 2 and ton > 50:
-        return True, f"Đề xuất {de_xuat} cao, SLTB {sltb} thấp, tồn {ton} còn nhiều", 0
-
-    # 4. Nếu đề xuất vượt tồn PLT, giới hạn lại (không loại)
+    # 5. Kiểm tra vượt tồn PLT
     if de_xuat > ton_plt:
-        return False, f"Tồn PLT chỉ có {ton_plt}, đề xuất {de_xuat} bị giới hạn", ton_plt
+        return False, f"Tồn PLT chỉ có {ton_plt}, giới hạn", ton_plt
 
     return False, "", de_xuat
 
@@ -65,7 +76,7 @@ st.markdown("Hệ thống tự động đề xuất, lọc phi logic và cảnh 
 # Sidebar
 ct_input = st.sidebar.number_input("Chu kỳ đặt hàng (ngày)", min_value=1, value=7, step=1)
 nguong_toi_thieu = st.sidebar.number_input("Ngưỡng số lượng đặt tối thiểu", min_value=1, value=5, step=1,
-                                           help="Các đề xuất dưới ngưỡng này sẽ bị loại bỏ (trừ trường hợp tồn kho = 0)")
+                                           help="Các đề xuất dưới ngưỡng này sẽ bị loại (trừ khi tồn sắp hết)")
 
 uploaded_file = st.file_uploader("Tải lên file dữ liệu (CSV hoặc Excel)", type=['csv', 'xlsx'])
 
@@ -76,23 +87,23 @@ if uploaded_file is not None:
         else:
             df = pd.read_excel(uploaded_file, skiprows=2, header=None)
         st.success(f"Đọc thành công! {len(df)} dòng")
-        
+
         df.columns = [
-            'SKU', 'TenSanPham', 'dvt', 'Ton_PLT', 
+            'SKU', 'TenSanPham', 'dvt', 'Ton_PLT',
             'DeXuat_co_san', 'BQ_ban_3D', 'Ton', 'SLTB'
         ]
         df = df[['SKU', 'TenSanPham', 'Ton_PLT', 'DeXuat_co_san', 'BQ_ban_3D', 'Ton', 'SLTB']]
-        
+
         st.subheader("Dữ liệu đầu vào (10 dòng đầu)")
         st.dataframe(df.head(10))
-        
+
     except Exception as e:
         st.error(f"Lỗi đọc file: {e}")
         st.stop()
 
     df = df[df['SLTB'].notna() & (df['SLTB'] > 0)]
     if len(df) == 0:
-        st.warning("Không có dữ liệu hợp lệ.")
+        st.warning("Không có dữ liệu hợp lệ (SLTB > 0).")
         st.stop()
 
     df['CT'] = ct_input
@@ -101,7 +112,7 @@ if uploaded_file is not None:
         row['SLTB'], row['CT'], row['Ton'], row['Ton_PLT'], row['DeXuat_co_san']
     ), axis=1)
 
-    # Lọc phi logic với ngưỡng tối thiểu
+    # Lọc phi logic
     df['LoaiBo'] = False
     df['LyDoLoaiBo'] = ""
     df['DeXuatSauLoc'] = 0
@@ -116,6 +127,7 @@ if uploaded_file is not None:
     df_bi_loai = df[df['LoaiBo']]
     df_khong_loai = df[~df['LoaiBo']]
 
+    # Kiểm tra bất thường
     df_khong_loai['BatThuong'] = False
     df_khong_loai['LyDo'] = ""
     for idx, row in df_khong_loai.iterrows():
@@ -200,7 +212,7 @@ if uploaded_file is not None:
             st.subheader("📋 Đơn hàng cuối cùng")
             st.dataframe(df_final)
 
-            # Xuất CSV & Excel
+            # Xuất CSV và Excel
             csv = df_final.to_csv(index=False).encode('utf-8')
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -212,9 +224,9 @@ if uploaded_file is not None:
                 st.download_button("⬇️ Tải CSV", csv, "don_hang.csv", "text/csv")
             with col_excel:
                 st.download_button(
-                    "⬇️ Tải Excel", 
-                    excel_data, 
-                    "don_hang.xlsx", 
+                    "⬇️ Tải Excel",
+                    excel_data,
+                    "don_hang.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         else:
